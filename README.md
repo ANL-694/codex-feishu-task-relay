@@ -4,13 +4,6 @@
 
 它不镜像实时输出、不开放公网端口，也不会把飞书文字直接拼成 Shell 命令。
 
-## 项目拆分
-
-- 本仓库是飞书版：[Codex 飞书任务中继](https://github.com/ANL-694/codex-feishu-task-relay)。
-- 微信版保留在独立仓库：[Codex 微信任务中继](https://github.com/ANL-694/codex-wechat-task-relay)。
-
-两套实现独立维护；本仓库不包含微信登录态、二维码、飞书凭据或本机任务数据库。
-
 ## 能做什么
 
 1. 所有 Codex Desktop 对话线程结束一回合后，向飞书私聊发送最终摘要。
