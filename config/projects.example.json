@@ -1,0 +1,18 @@
+{
+  "completionCharsPerMessage": 3000,
+  "executorEnabled": true,
+  "notifyUnmappedProjects": true,
+  "ownerUserIds": [],
+  "projects": [
+    {
+      "id": "example",
+      "name": "示例项目",
+      "aliases": [
+        "example"
+      ],
+      "cwdPrefixes": [
+        "C:\\path\\to\\your\\project"
+      ]
+    }
+  ]
+}

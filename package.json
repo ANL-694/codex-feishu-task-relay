@@ -1,0 +1,37 @@
+{
+  "name": "codex-feishu-task-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "将 Codex 完成摘要推送到飞书，并按线程接收下一步任务。",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ANL-694/codex-feishu-task-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ANL-694/codex-feishu-task-relay/issues"
+  },
+  "homepage": "https://github.com/ANL-694/codex-feishu-task-relay#readme",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --no-warnings src/worker.cjs",
+    "control:status": "node --no-warnings src/control.cjs status",
+    "control:start": "node --no-warnings src/control.cjs start",
+    "control:stop": "node --no-warnings src/control.cjs stop",
+    "doctor": "node --no-warnings src/cli.cjs doctor",
+    "projects": "node --no-warnings src/cli.cjs projects",
+    "tasks": "node --no-warnings src/cli.cjs tasks",
+    "owners": "node --no-warnings src/cli.cjs owners",
+    "owner:allow": "node --no-warnings src/cli.cjs owner:allow",
+    "demo": "node --no-warnings src/cli.cjs demo",
+    "install-hook": "node --no-warnings scripts/configure-notify.cjs install",
+    "remove-hook": "node --no-warnings scripts/configure-notify.cjs remove",
+    "test": "node --no-warnings --test"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.71.1"
+  }
+}
