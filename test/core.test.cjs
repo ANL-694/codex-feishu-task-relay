@@ -587,6 +587,7 @@ test('仅授权用户可以按线程名字回复并写入任务队列', () =>
 
     assert.equal(denied.reply, '当前飞书机器人未授权。');
     assert.match(accepted.reply, /已收录 T-1 到「BDS 联调线程」/);
+    assert.match(accepted.reply, /优先显示在对应线程/);
     assert.equal(store.listTasks('thread:thread-3').length, 1);
   }));
 
@@ -641,6 +642,7 @@ test('授权用户可用新建命令创建隔离任务且未授权用户不会�
     assert.equal(denied.reply, '当前飞书机器人未授权。');
     assert.equal(createCalls, 1);
     assert.match(accepted.reply, /已新建 T-1「新项目想法」/);
+    assert.match(accepted.reply, /优先显示在对应线程/);
     assert.equal(accepted.task.execution_mode, 'new');
     assert.equal(accepted.task.thread_id, null);
     assert.match(accepted.task.project_id, /^new:/);
@@ -697,6 +699,7 @@ test('线程名字可直接关联下一步', () =>
     });
 
     assert.match(accepted.reply, /已收录 T-1 到「当前飞书中继」/);
+    assert.match(accepted.reply, /优先显示在对应线程/);
     assert.equal(store.listTasks('thread:thread-4').length, 1);
   }));
 

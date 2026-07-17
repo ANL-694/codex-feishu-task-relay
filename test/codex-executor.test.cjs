@@ -111,6 +111,14 @@ class FakeStore {
     return this.completions.find((completion) => completion.executor_task_id === taskId) || null;
   }
 
+  findCompletionForThreadTurn(threadId, turnId) {
+    return (
+      this.completions.find(
+        (completion) => completion.thread_id === threadId && completion.turn_id === turnId,
+      ) || null
+    );
+  }
+
   markTaskDone(taskId, options) {
     this.markDoneCalls.push({ options, taskId });
     const stored = this.tasks.find((task) => task.task_id === taskId);
@@ -122,6 +130,22 @@ class FakeStore {
     stored.result_completion_id = options.resultCompletionId;
     stored.status = 'done';
     stored.lease_owner = null;
+    return { ...stored };
+  }
+
+  markTaskDesktopTurn(taskId, options) {
+    const stored = this.tasks.find((task) => task.task_id === taskId);
+
+    if (
+      !stored ||
+      stored.status !== 'running' ||
+      stored.lease_owner !== options.leaseOwner ||
+      (stored.desktop_turn_id && stored.desktop_turn_id !== options.turnId)
+    ) {
+      return null;
+    }
+
+    stored.desktop_turn_id = options.turnId;
     return { ...stored };
   }
 
@@ -243,6 +267,79 @@ test('优先采用 notify hook 完成记录并只回收一次遗留租约', asyn
   assert.equal(store.recoverCalls.length, 1);
   assert.ok(store.claimCalls[0].leaseMs >= DEFAULT_TIMEOUT_MS + DEFAULT_LEASE_HEADROOM_MS);
   assert.equal(executor.getState().completedTasks, 1);
+});
+
+test('桌面桥接投递后读取同一 turn 的本机会话完成结果', async () => {
+  const store = new FakeStore([taskInput(9)]);
+  let cliRuns = 0;
+  let completionReads = 0;
+  const desktopBridge = {
+    async dispatch(claimedTask) {
+      return { available: true, threadId: claimedTask.thread_id, turnId: 'desktop-turn-9' };
+    },
+  };
+  const executor = createCodexExecutor({
+    desktopBridge,
+    desktopCompletionWaitMs: 100,
+    desktopTurnCompletionReader(threadId, turnId) {
+      completionReads += 1;
+      assert.equal(threadId, THREAD_ID);
+      assert.equal(turnId, 'desktop-turn-9');
+      return completionReads >= 2
+        ? { finalMessage: '桌面线程的最终答复。', turnId }
+        : null;
+    },
+    leaseOwner: 'executor-test',
+    logger: silentLogger(),
+    now: () => new Date(START_TIME),
+    notifyPollMs: 1,
+    pollIntervalMs: 60_000,
+    runTask: async () => {
+      cliRuns += 1;
+      throw new Error('桌面桥接成功时不应启动 CLI');
+    },
+    store,
+  });
+
+  executor.start();
+  await waitUntil(() => store.tasks[0].status === 'done', '桌面 turn 完成');
+  await executor.stop();
+
+  assert.equal(cliRuns, 0);
+  assert.equal(store.tasks[0].desktop_turn_id, 'desktop-turn-9');
+  assert.equal(store.markDoneCalls[0].options.resultCompletionId, 1);
+  assert.equal(store.recordedInputs[0].executorTaskId, 9);
+  assert.equal(store.recordedInputs[0].finalMessage, '桌面线程的最终答复。');
+  assert.equal(store.recordedInputs[0].turnId, 'desktop-turn-9');
+});
+
+test('重启后复用已保存的桌面 turn，不重复启动 CLI', async () => {
+  const store = new FakeStore([taskInput(10, { desktop_turn_id: 'desktop-turn-10' })]);
+  let cliRuns = 0;
+  const executor = createCodexExecutor({
+    desktopCompletionWaitMs: 100,
+    desktopTurnCompletionReader(threadId, turnId) {
+      assert.equal(threadId, THREAD_ID);
+      assert.equal(turnId, 'desktop-turn-10');
+      return { finalMessage: '恢复后的桌面任务已完成。', turnId };
+    },
+    leaseOwner: 'executor-test',
+    logger: silentLogger(),
+    now: () => new Date(START_TIME),
+    pollIntervalMs: 60_000,
+    runTask: async () => {
+      cliRuns += 1;
+      throw new Error('已保存 Desktop turn 时不应启动 CLI');
+    },
+    store,
+  });
+
+  executor.start();
+  await waitUntil(() => store.tasks[0].status === 'done', '复用已保存的桌面 turn');
+  await executor.stop();
+
+  assert.equal(cliRuns, 0);
+  assert.equal(store.recordedInputs[0].turnId, 'desktop-turn-10');
 });
 
 test('notify hook 未入库时使用稳定 turnId 补建完成摘要', async () => {

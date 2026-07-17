@@ -117,7 +117,7 @@ def main():
         screenshot_path = ARTIFACT_DIR / "smoke.png"
         window.capture_as_image().save(screenshot_path)
 
-        return {
+        result = {
             "app": str(APP_PATH),
             "controlledWorker": controlled_worker,
             "hook": control_text(controls["hook"]),
@@ -128,13 +128,22 @@ def main():
             "screenshot": str(screenshot_path),
             "service": control_text(controls["service"]),
             "feishu": control_text(controls["feishu"]),
+            "trayVerified": False,
         }
-    finally:
-        try:
+
+        if launched_here:
             window.close()
-            application.wait_for_process_exit(timeout=5)
-        except Exception:
-            application.kill()
+            wait_until(lambda: not window.is_visible(), timeout=5)
+            assert application.is_process_running()
+            result["trayVerified"] = True
+
+        return result
+    finally:
+        if launched_here:
+            try:
+                application.kill()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

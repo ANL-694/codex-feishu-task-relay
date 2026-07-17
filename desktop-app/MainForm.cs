@@ -18,7 +18,12 @@ namespace CodexFeishuRelayDesktop
         private static readonly Color MutedText = Color.FromArgb(96, 112, 137);
 
         private readonly RelayBackend backend;
+        private readonly bool startInTray;
         private readonly Timer refreshTimer;
+        private NotifyIcon trayIcon;
+        private ContextMenuStrip trayMenu;
+        private ToolStripMenuItem trayStartMenuItem;
+        private ToolStripMenuItem trayStopMenuItem;
         private Label serviceValue;
         private Label serviceDetail;
         private Label hookValue;
@@ -38,12 +43,16 @@ namespace CodexFeishuRelayDesktop
         private Button feishuConfigButton;
         private Button refreshButton;
         private CheckBox autoStartCheckBox;
+        private bool exitRequested;
         private bool refreshInProgress;
+        private bool trayHintShown;
         private bool updatingAutoStart;
+        private bool workerRunning;
 
-        public MainForm(RelayBackend backend)
+        public MainForm(RelayBackend backend, bool startInTray = false)
         {
             this.backend = backend;
+            this.startInTray = startInTray;
             refreshTimer = new Timer();
             refreshTimer.Interval = 3000;
             refreshTimer.Tick += async delegate { await RefreshStatusAsync(false); };
@@ -57,16 +66,54 @@ namespace CodexFeishuRelayDesktop
             BackColor = WindowBackground;
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
+            if (startInTray)
+            {
+                ShowInTaskbar = false;
+                WindowState = FormWindowState.Minimized;
+            }
+
             BuildInterface();
+            BuildTrayIcon();
 
             Load += async delegate
             {
+                if (startInTray)
+                {
+                    HideToTray(false);
+                }
+
                 LoadAutoStartState();
-                await RefreshStatusAsync(true);
+
+                if (startInTray)
+                {
+                    try
+                    {
+                        await backend.StartWorkerAsync();
+                    }
+                    catch (Exception error)
+                    {
+                        SetFooter("后台启动中继失败：" + error.Message, Negative);
+                        trayIcon.ShowBalloonTip(
+                            5000,
+                            "Codex 飞书中继",
+                            "后台启动中继失败：" + error.Message,
+                            ToolTipIcon.Error);
+                    }
+                }
+
+                await RefreshStatusAsync(!startInTray);
                 refreshTimer.Start();
             };
 
-            FormClosed += delegate { refreshTimer.Stop(); };
+            Resize += MainFormResize;
+            FormClosing += MainFormClosing;
+            FormClosed += delegate
+            {
+                refreshTimer.Stop();
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                trayMenu.Dispose();
+            };
         }
 
         private void BuildInterface()
@@ -89,6 +136,44 @@ namespace CodexFeishuRelayDesktop
             root.Controls.Add(BuildActions(), 0, 2);
             root.Controls.Add(BuildLogPanel(), 0, 3);
             root.Controls.Add(BuildFooter(), 0, 4);
+        }
+
+        private void BuildTrayIcon()
+        {
+            ToolStripMenuItem openMenuItem = new ToolStripMenuItem("打开控制台");
+            trayStartMenuItem = new ToolStripMenuItem("启动中继");
+            trayStopMenuItem = new ToolStripMenuItem("停止中继");
+            ToolStripMenuItem exitMenuItem = new ToolStripMenuItem("退出控制台");
+
+            openMenuItem.Click += delegate { RestoreFromTray(); };
+            trayStartMenuItem.Click += async delegate
+            {
+                await RunTrayActionAsync(
+                    "启动中继",
+                    async delegate { await backend.StartWorkerAsync(); });
+            };
+            trayStopMenuItem.Click += async delegate
+            {
+                await RunTrayActionAsync(
+                    "停止中继",
+                    async delegate { await backend.StopWorkerAsync(); });
+            };
+            exitMenuItem.Click += delegate { ExitFromTray(); };
+
+            trayMenu = new ContextMenuStrip();
+            trayMenu.Items.Add(openMenuItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(trayStartMenuItem);
+            trayMenu.Items.Add(trayStopMenuItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(exitMenuItem);
+
+            trayIcon = new NotifyIcon();
+            trayIcon.Icon = SystemIcons.Application;
+            trayIcon.Text = "Codex 飞书中继";
+            trayIcon.ContextMenuStrip = trayMenu;
+            trayIcon.Visible = true;
+            trayIcon.DoubleClick += delegate { RestoreFromTray(); };
         }
 
         private Control BuildHeader()
@@ -324,7 +409,7 @@ namespace CodexFeishuRelayDesktop
             Label hint = new Label();
             hint.Dock = DockStyle.Bottom;
             hint.Height = 28;
-            hint.Text = "关闭本窗口不会停止后台中继；需要停服时请点击“停止”。";
+            hint.Text = "最小化或关闭会隐藏到系统托盘；后台中继继续运行，停服请点击“停止”。";
             hint.ForeColor = MutedText;
             hint.TextAlign = ContentAlignment.BottomLeft;
 
@@ -385,6 +470,7 @@ namespace CodexFeishuRelayDesktop
             FeishuStatus feishu = status.feishu ?? new FeishuStatus();
             QueueStatus queues = status.queues ?? new QueueStatus();
             ExecutorDisplay executor = StatusPresentation.BuildExecutor(status.executor);
+            workerRunning = worker.running;
 
             serviceValue.Text = worker.running ? "运行中" : "已停止";
             serviceValue.AccessibleName = serviceValue.Text;
@@ -420,12 +506,14 @@ namespace CodexFeishuRelayDesktop
             queueDetail.Text = StatusPresentation.BuildQueueDetail(queues);
             queueDetail.AccessibleName = queueDetail.Text;
 
-            startButton.Enabled = !worker.running;
+            startButton.Enabled = !workerRunning;
             startButton.BackColor = worker.running ? Color.FromArgb(225, 231, 240) : Primary;
             startButton.ForeColor = worker.running ? MutedText : Color.White;
             startButton.FlatAppearance.BorderColor = worker.running ? Color.FromArgb(214, 221, 232) : Primary;
-            restartButton.Enabled = worker.running;
-            stopButton.Enabled = worker.running;
+            restartButton.Enabled = workerRunning;
+            stopButton.Enabled = workerRunning;
+            trayStartMenuItem.Enabled = !workerRunning;
+            trayStopMenuItem.Enabled = workerRunning;
             installHookButton.Text = hook.installed ? "检查 Hook" : "修复 Hook";
         }
 
@@ -456,8 +544,9 @@ namespace CodexFeishuRelayDesktop
             return "机器人已绑定 · 可主动推送完成摘要";
         }
 
-        private async Task RunActionAsync(string actionName, Func<Task> action)
+        private async Task<bool> RunActionAsync(string actionName, Func<Task> action)
         {
+            bool succeeded = false;
             SetBusy(true);
             SetFooter(actionName + "处理中……", Primary);
 
@@ -466,6 +555,7 @@ namespace CodexFeishuRelayDesktop
                 await action();
                 await RefreshStatusAsync(false);
                 SetFooter(actionName + "完成。", Positive);
+                succeeded = true;
             }
             catch (Exception error)
             {
@@ -474,6 +564,22 @@ namespace CodexFeishuRelayDesktop
             finally
             {
                 SetBusy(false);
+            }
+
+            return succeeded;
+        }
+
+        private async Task RunTrayActionAsync(string actionName, Func<Task> action)
+        {
+            bool succeeded = await RunActionAsync(actionName, action);
+
+            if (!Visible)
+            {
+                trayIcon.ShowBalloonTip(
+                    2500,
+                    "Codex 飞书中继",
+                    footerStatus.Text,
+                    succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
             }
         }
 
@@ -489,6 +595,16 @@ namespace CodexFeishuRelayDesktop
                 startButton.Enabled = false;
                 restartButton.Enabled = false;
                 stopButton.Enabled = false;
+                trayStartMenuItem.Enabled = false;
+                trayStopMenuItem.Enabled = false;
+            }
+            else
+            {
+                startButton.Enabled = !workerRunning;
+                restartButton.Enabled = workerRunning;
+                stopButton.Enabled = workerRunning;
+                trayStartMenuItem.Enabled = !workerRunning;
+                trayStopMenuItem.Enabled = workerRunning;
             }
         }
 
@@ -529,6 +645,58 @@ namespace CodexFeishuRelayDesktop
                 updatingAutoStart = false;
                 ShowOperationError("修改开机启动", error);
             }
+        }
+
+        private void MainFormResize(object sender, EventArgs eventArguments)
+        {
+            if (WindowState == FormWindowState.Minimized)
+            {
+                HideToTray();
+            }
+        }
+
+        private void MainFormClosing(object sender, FormClosingEventArgs eventArguments)
+        {
+            if (
+                exitRequested ||
+                eventArguments.CloseReason == CloseReason.WindowsShutDown ||
+                eventArguments.CloseReason == CloseReason.ApplicationExitCall)
+            {
+                return;
+            }
+
+            eventArguments.Cancel = true;
+            HideToTray();
+        }
+
+        private void HideToTray(bool showHint = true)
+        {
+            ShowInTaskbar = false;
+            Hide();
+
+            if (showHint && !trayHintShown)
+            {
+                trayIcon.ShowBalloonTip(
+                    3000,
+                    "Codex 飞书中继",
+                    "控制台已隐藏到系统托盘，后台中继会继续运行。",
+                    ToolTipIcon.Info);
+                trayHintShown = true;
+            }
+        }
+
+        private void RestoreFromTray()
+        {
+            ShowInTaskbar = true;
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+        }
+
+        private void ExitFromTray()
+        {
+            exitRequested = true;
+            Close();
         }
 
         private void ShowOperationError(string operation, Exception error)

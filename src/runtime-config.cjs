@@ -41,6 +41,7 @@ function normalizeConfig(value) {
       Number.isFinite(completionCharsPerMessage) && completionCharsPerMessage >= 500
         ? Math.floor(completionCharsPerMessage)
         : 3000,
+    desktopDeliveryEnabled: value?.desktopDeliveryEnabled !== false,
     executorEnabled: value?.executorEnabled === true,
     notifyUnmappedProjects: value?.notifyUnmappedProjects === true,
     ownerUserIds: uniqueStrings(Array.isArray(value?.ownerUserIds) ? value.ownerUserIds : []).slice(0, 1),

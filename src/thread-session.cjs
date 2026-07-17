@@ -34,11 +34,11 @@ function readSubagentLabel(payload) {
   return normalizeSubagentLabel(agentPath);
 }
 
-function findThreadSessionFile(threadId, sessionsDirectory = SESSIONS_DIR) {
+function listThreadSessionFiles(threadId, sessionsDirectory = SESSIONS_DIR) {
   const normalizedThreadId = normalizeThreadId(threadId);
 
   if (!normalizedThreadId) {
-    return null;
+    return [];
   }
 
   const stack = [sessionsDirectory];
@@ -79,7 +79,67 @@ function findThreadSessionFile(threadId, sessionsDirectory = SESSIONS_DIR) {
     }
   });
 
-  return candidates[0] || null;
+  return candidates;
+}
+
+function findThreadSessionFile(threadId, sessionsDirectory = SESSIONS_DIR) {
+  return listThreadSessionFiles(threadId, sessionsDirectory)[0] || null;
+}
+
+function findThreadTurnCompletion(threadId, turnId, sessionsDirectory = SESSIONS_DIR) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  const normalizedTurnId = normalizeThreadId(turnId);
+
+  if (!normalizedThreadId || !normalizedTurnId) {
+    return null;
+  }
+
+  for (const sessionFile of listThreadSessionFiles(normalizedThreadId, sessionsDirectory)) {
+    let source;
+
+    try {
+      source = fs.readFileSync(sessionFile, 'utf8');
+    } catch {
+      continue;
+    }
+
+    const lines = source.split(/\r?\n/);
+
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+
+      if (!line.trim()) {
+        continue;
+      }
+
+      try {
+        const entry = JSON.parse(line);
+        const payload = entry?.payload;
+
+        if (
+          entry?.type !== 'event_msg' ||
+          !payload ||
+          payload.type !== 'task_complete' ||
+          normalizeThreadId(payload.turn_id) !== normalizedTurnId
+        ) {
+          continue;
+        }
+
+        return {
+          completedAt: payload.completed_at ?? null,
+          finalMessage:
+            typeof payload.last_agent_message === 'string'
+              ? payload.last_agent_message.trim()
+              : '',
+          turnId: normalizedTurnId,
+        };
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return null;
 }
 
 function readThreadSessionMetadata(threadId, sessionsDirectory = SESSIONS_DIR) {
@@ -147,8 +207,10 @@ module.exports = {
   CODEX_HOME,
   SESSIONS_DIR,
   THREAD_ID_PATTERN,
+  findThreadTurnCompletion,
   findThreadSessionFile,
   isSubagentThread,
+  listThreadSessionFiles,
   normalizeThreadId,
   readThreadSessionMetadata,
 };

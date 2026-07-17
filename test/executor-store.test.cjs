@@ -221,6 +221,50 @@ test('新任务可领取并在返回线程后原子绑定为后续 resume 任务
   }
 });
 
+test('桌面投递 turn 持久化后可按线程和 turn 恢复完成回执', () => {
+  const temporaryDirectory = createTemporaryDirectory();
+  const store = createStore(path.join(temporaryDirectory, 'relay.sqlite'));
+
+  try {
+    const task = createThreadTask(store);
+    const claimed = store.claimNextExecutableTask({
+      leaseOwner: 'executor-a',
+      now: '2026-07-17T02:00:00.000Z',
+    });
+    const desktopTurn = store.markTaskDesktopTurn(task.task_id, {
+      leaseOwner: 'executor-a',
+      turnId: 'desktop-turn-1',
+    });
+
+    assert.equal(desktopTurn.desktop_turn_id, 'desktop-turn-1');
+
+    const requeued = store.requeueTask(task.task_id, {
+      delayMs: 0,
+      leaseOwner: 'executor-a',
+      now: '2026-07-17T02:00:01.000Z',
+    });
+
+    assert.equal(requeued.desktop_turn_id, 'desktop-turn-1');
+
+    const completion = store.recordCompletion({
+      cwd: claimed.cwd,
+      finalMessage: '桌面线程已完成。',
+      projectId: claimed.project_id,
+      projectName: claimed.project_name,
+      threadId: claimed.thread_id,
+      turnId: 'desktop-turn-1',
+    }).completion;
+
+    assert.equal(
+      store.findCompletionForThreadTurn(claimed.thread_id, 'desktop-turn-1').completion_id,
+      completion.completion_id,
+    );
+  } finally {
+    store.close();
+    fs.rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
 test('任务领取跨连接不重复并支持租约恢复和延迟重试', () => {
   const temporaryDirectory = createTemporaryDirectory();
   const databasePath = path.join(temporaryDirectory, 'relay.sqlite');
