@@ -4,6 +4,9 @@ const { formatTaskList } = require('./formatters.cjs');
 const { createTaskWorkspace } = require('./task-workspace.cjs');
 const { findLatestThreadsByTitle } = require('./thread-registry.cjs');
 
+const DESKTOP_VISIBILITY_NOTICE =
+  '已打开的 Codex Desktop 可用时，任务会优先显示在对应线程；桌面不可用时才改为后台 CLI，结果仍会回传到机器人。';
+
 function helpText() {
   return [
     '请按完成通知中的线程名字回复：',
@@ -11,7 +14,8 @@ function helpText() {
     '',
     '新任务：/新建 <任务名字>：<第一步指令>',
     '命令：/任务 [线程名字]、/完成 T-编号、/帮助',
-    '飞书消息会进入原 Codex 线程的执行队列。',
+    '机器人消息会优先进入原 Codex Desktop 线程执行。',
+    DESKTOP_VISIBILITY_NOTICE,
   ].join('\n');
 }
 
@@ -101,6 +105,7 @@ function handleIncomingText({
         reply: [
           `已新建 T-${task.task_id}「${command.projectName}」。`,
           '已在独立目录进入 Codex 执行队列。',
+          DESKTOP_VISIBILITY_NOTICE,
           `首次完成后可用「${command.projectName}：<下一步>」继续。`,
         ].join('\n'),
         task,
@@ -175,7 +180,11 @@ function handleIncomingText({
   });
 
   return {
-    reply: `已收录 T-${task.task_id} 到「${target.projectName}」。\n已进入 Codex 执行队列。`,
+    reply: [
+      `已收录 T-${task.task_id} 到「${target.projectName}」。`,
+      '已进入 Codex 执行队列。',
+      DESKTOP_VISIBILITY_NOTICE,
+    ].join('\n'),
     task,
   };
 }

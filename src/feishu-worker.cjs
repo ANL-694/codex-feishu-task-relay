@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const process = require('node:process');
+const { createCodexDesktopBridge } = require('./codex-desktop-bridge.cjs');
 const { createCodexExecutor } = require('./codex-executor.cjs');
 const { assertFeishuConfigured, ensurePairingCode, readFeishuConfig, writeFeishuConfig } = require('./feishu-config.cjs');
 const { createFeishuTransport } = require('./feishu-transport.cjs');
@@ -324,7 +325,11 @@ async function main(dependencies = {}) {
     await controlServer.listen();
 
     if (runtimeConfig.executorEnabled) {
+      const desktopBridge = runtimeConfig.desktopDeliveryEnabled
+        ? (dependencies.createCodexDesktopBridge || createCodexDesktopBridge)()
+        : null;
       executor = createCodexExecutor({
+        desktopBridge,
         logger,
         store,
       });

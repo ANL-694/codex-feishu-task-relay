@@ -39,11 +39,7 @@ namespace CodexFeishuRelayDesktop
                 return;
             }
 
-            if (HasArgument(arguments, "--background"))
-            {
-                RunBackgroundStart(backend);
-                return;
-            }
+            bool startInTray = HasArgument(arguments, "--background");
 
             bool createdNew;
 
@@ -72,7 +68,7 @@ namespace CodexFeishuRelayDesktop
 
                 try
                 {
-                    MainForm form = new MainForm(backend);
+                    MainForm form = new MainForm(backend, startInTray);
                     TraceStartup(backend, "form-created");
                     Application.Run(form);
                     TraceStartup(backend, "message-loop-ended");
@@ -102,24 +98,6 @@ namespace CodexFeishuRelayDesktop
             }
 
             return false;
-        }
-
-        private static void RunBackgroundStart(RelayBackend backend)
-        {
-            try
-            {
-                backend.StartWorkerAsync().GetAwaiter().GetResult();
-            }
-            catch (Exception error)
-            {
-                try
-                {
-                    backend.AppendDesktopError("开机启动失败：" + error.Message);
-                }
-                catch
-                {
-                }
-            }
         }
 
         private static void TraceStartup(RelayBackend backend, string stage)

@@ -108,6 +108,32 @@ test('完整 WinForms 源码可在不引用 System.Management 时编译', (conte
   }
 });
 
+test('桌面最小化和关闭隐藏到托盘且仅显式退出关闭', () => {
+  const mainFormSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'desktop-app', 'MainForm.cs'),
+    'utf8',
+  );
+  const programSource = fs.readFileSync(
+    path.join(PROJECT_ROOT, 'desktop-app', 'Program.cs'),
+    'utf8',
+  );
+
+  assert.ok(mainFormSource.includes('trayIcon = new NotifyIcon();'));
+  assert.ok(mainFormSource.includes('Resize += MainFormResize;'));
+  assert.ok(mainFormSource.includes('FormClosing += MainFormClosing;'));
+  assert.ok(mainFormSource.includes('eventArguments.Cancel = true;'));
+  assert.ok(mainFormSource.includes('CloseReason.WindowsShutDown'));
+  assert.ok(mainFormSource.includes('HideToTray();'));
+  assert.ok(mainFormSource.includes('exitRequested = true;'));
+  assert.ok(mainFormSource.includes('trayStartMenuItem = new ToolStripMenuItem("启动中继");'));
+  assert.ok(mainFormSource.includes('trayStopMenuItem = new ToolStripMenuItem("停止中继");'));
+  assert.ok(mainFormSource.includes('MainForm(RelayBackend backend, bool startInTray = false)'));
+  assert.ok(mainFormSource.includes('HideToTray(false);'));
+  assert.ok(programSource.includes('bool startInTray = HasArgument(arguments, "--background");'));
+  assert.ok(programSource.includes('new MainForm(backend, startInTray)'));
+  assert.doesNotMatch(programSource, /RunBackgroundStart/);
+});
+
 test('桌面停止操作只调用 control stop', () => {
   const relaySource = fs.readFileSync(
     path.join(PROJECT_ROOT, 'desktop-app', 'RelayBackend.cs'),

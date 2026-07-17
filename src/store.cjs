@@ -105,6 +105,7 @@ function createStore(databasePath = DATABASE_PATH) {
       lease_owner TEXT,
       lease_expires_at TEXT,
       result_completion_id INTEGER,
+      desktop_turn_id TEXT,
       execution_mode TEXT NOT NULL DEFAULT 'resume',
       FOREIGN KEY(completion_id) REFERENCES completions(completion_id),
       FOREIGN KEY(result_completion_id) REFERENCES completions(completion_id)
@@ -146,6 +147,7 @@ function createStore(databasePath = DATABASE_PATH) {
     ['lease_owner', 'TEXT'],
     ['lease_expires_at', 'TEXT'],
     ['result_completion_id', 'INTEGER'],
+    ['desktop_turn_id', 'TEXT'],
     ['execution_mode', "TEXT NOT NULL DEFAULT 'resume'"],
   ]);
   const taskColumns = new Set(
@@ -178,6 +180,9 @@ function createStore(databasePath = DATABASE_PATH) {
       ON tasks(status, next_attempt_at, task_id);
     CREATE INDEX IF NOT EXISTS idx_tasks_thread
       ON tasks(thread_id, task_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_tasks_desktop_turn
+      ON tasks(thread_id, desktop_turn_id)
+      WHERE desktop_turn_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_completions_thread_created
       ON completions(thread_id, created_at DESC, completion_id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_completions_executor_task
@@ -255,6 +260,21 @@ function createStore(databasePath = DATABASE_PATH) {
       database
         .prepare('SELECT * FROM completions WHERE executor_task_id = ? LIMIT 1')
         .get(normalizedTaskId) || null
+    );
+  }
+
+  function findCompletionForThreadTurn(threadId, turnId) {
+    const normalizedThreadId = String(threadId || '').trim();
+    const normalizedTurnId = String(turnId || '').trim();
+
+    if (!normalizedThreadId || !normalizedTurnId) {
+      return null;
+    }
+
+    return (
+      database
+        .prepare('SELECT * FROM completions WHERE thread_id = ? AND turn_id = ? LIMIT 1')
+        .get(normalizedThreadId, normalizedTurnId) || null
     );
   }
 
@@ -700,6 +720,32 @@ function createStore(databasePath = DATABASE_PATH) {
     return getTask(taskId);
   }
 
+  function markTaskDesktopTurn(taskId, options = {}) {
+    const leaseOwner = String(options.leaseOwner || '').trim();
+    const turnId = String(options.turnId || '').trim();
+
+    if (!leaseOwner || !turnId) {
+      throw new TypeError('leaseOwner and turnId are required');
+    }
+
+    const result = database
+      .prepare(`
+        UPDATE tasks
+        SET desktop_turn_id = ?
+        WHERE task_id = ?
+          AND status = 'running'
+          AND lease_owner = ?
+          AND (desktop_turn_id IS NULL OR desktop_turn_id = ?)
+      `)
+      .run(turnId, taskId, leaseOwner, turnId);
+
+    if (Number(result.changes) !== 1) {
+      return null;
+    }
+
+    return getTask(taskId);
+  }
+
   function markTaskFailed(taskId, options = {}) {
     const normalizedOptions =
       options instanceof Error || typeof options === 'string' ? { error: options } : options;
@@ -800,6 +846,7 @@ function createStore(databasePath = DATABASE_PATH) {
     claimNextExecutableTask,
     createTask,
     findCompletionForExecutorTask,
+    findCompletionForThreadTurn,
     findLatestCompletionsByThreadTitle,
     findLatestCompletionForThreadSince,
     getCompletion,
@@ -813,6 +860,7 @@ function createStore(databasePath = DATABASE_PATH) {
     markCompletionDeliveryFailure,
     markCompletionChunkSent,
     markCompletionSent,
+    markTaskDesktopTurn,
     markTaskDone,
     markTaskFailed,
     recordCompletion,

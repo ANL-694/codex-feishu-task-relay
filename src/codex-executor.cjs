@@ -5,9 +5,13 @@ const {
   DEFAULT_TIMEOUT_MS,
   runCodexTask,
 } = require('./codex-task-runner.cjs');
+const { findThreadTurnCompletion } = require('./thread-session.cjs');
 
 const DEFAULT_LEASE_HEADROOM_MS = 15 * 60 * 1000;
 const DEFAULT_LEASE_MS = DEFAULT_TIMEOUT_MS + DEFAULT_LEASE_HEADROOM_MS;
+const DEFAULT_DESKTOP_COMPLETION_WAIT_MS = DEFAULT_TIMEOUT_MS;
+const DEFAULT_DESKTOP_EMPTY_COMPLETION_MESSAGE =
+  'Codex Desktop 已完成任务，但没有生成可转发的最终答复。';
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_NOTIFY_POLL_MS = 250;
 const DEFAULT_NOTIFY_WAIT_MS = 5_000;
@@ -171,6 +175,13 @@ function createCodexExecutor(options = {}) {
 
   const runner = options.runTask || runCodexTask;
   const runnerOptions = { ...(options.runnerOptions || {}) };
+  const desktopBridge = options.desktopBridge || null;
+  const desktopTurnCompletionReader =
+    options.desktopTurnCompletionReader || findThreadTurnCompletion;
+  const desktopCompletionWaitMs = asNonNegativeNumber(
+    options.desktopCompletionWaitMs ?? DEFAULT_DESKTOP_COMPLETION_WAIT_MS,
+    'desktopCompletionWaitMs',
+  );
   const notifyWaitMs = asNonNegativeNumber(
     options.notifyWaitMs ?? DEFAULT_NOTIFY_WAIT_MS,
     'notifyWaitMs',
@@ -202,6 +213,7 @@ function createCodexExecutor(options = {}) {
   const defaultLeaseMs = Math.max(
     DEFAULT_LEASE_MS,
     runnerTimeoutMs + notifyWaitMs + DEFAULT_LEASE_HEADROOM_MS,
+    desktopCompletionWaitMs + DEFAULT_LEASE_HEADROOM_MS,
   );
   const leaseMs = asNonNegativeNumber(options.leaseMs ?? defaultLeaseMs, 'leaseMs');
   const leaseOwner = String(
@@ -234,8 +246,8 @@ function createCodexExecutor(options = {}) {
     throw new TypeError('leaseMs must be a positive number');
   }
 
-  if (notifyWaitMs > 0 && notifyPollMs <= 0) {
-    throw new TypeError('notifyPollMs must be positive when notifyWaitMs is enabled');
+  if ((notifyWaitMs > 0 || desktopCompletionWaitMs > 0) && notifyPollMs <= 0) {
+    throw new TypeError('notifyPollMs must be positive when completion waiting is enabled');
   }
 
   if (retryMaxMs < retryBaseMs) {
@@ -411,6 +423,131 @@ function createCodexExecutor(options = {}) {
     }
   }
 
+  function desktopTurnId(task) {
+    return String(task?.desktop_turn_id || '').trim() || null;
+  }
+
+  function recordDesktopCompletion(task, turnId, desktopCompletion) {
+    const finalMessage =
+      String(desktopCompletion?.finalMessage || '').trim() ||
+      DEFAULT_DESKTOP_EMPTY_COMPLETION_MESSAGE;
+    const recorded = store.recordCompletion({
+      cwd: String(task.cwd || ''),
+      executorTaskId: task.task_id,
+      finalMessage,
+      inputSummary: `飞书任务 T-${task.task_id} 通过 Codex Desktop 执行`,
+      projectId: String(task.project_id),
+      projectName: String(task.project_name || '未命名对话'),
+      threadId: String(task.thread_id),
+      turnId,
+    });
+    const completion = recorded?.completion;
+
+    if (!completion?.completion_id) {
+      throw new CodexTaskExecutionError('无法保存 Codex Desktop 最终答复。', {
+        code: 'DESKTOP_COMPLETION_NOT_RECORDED',
+      });
+    }
+
+    return completion;
+  }
+
+  async function findDesktopCompletion(task, turnId) {
+    let remainingMs = desktopCompletionWaitMs;
+
+    for (;;) {
+      const storedCompletion =
+        typeof store.findCompletionForThreadTurn === 'function'
+          ? store.findCompletionForThreadTurn(task.thread_id, turnId)
+          : null;
+
+      if (storedCompletion) {
+        return storedCompletion;
+      }
+
+      const desktopCompletion = await desktopTurnCompletionReader(task.thread_id, turnId);
+
+      if (desktopCompletion) {
+        return recordDesktopCompletion(task, turnId, desktopCompletion);
+      }
+
+      if (remainingMs <= 0 || stopping) {
+        return null;
+      }
+
+      const delayMs = Math.min(notifyPollMs, remainingMs);
+      await waitForSignal(delayMs);
+      remainingMs -= delayMs;
+    }
+  }
+
+  async function completeTask(task, completion) {
+    const done = store.markTaskDone(task.task_id, {
+      leaseOwner,
+      now: currentDate(),
+      resultCompletionId: completion.completion_id,
+    });
+
+    if (!done) {
+      throw new CodexTaskExecutionError('任务执行租约已失效，无法写入完成状态。', {
+        code: 'TASK_LEASE_LOST',
+      });
+    }
+
+    completedTasks += 1;
+    log('info', `T-${task.task_id} 已完成，结果 C-${completion.completion_id} 已进入飞书队列。`);
+  }
+
+  async function tryDesktopDelivery(task) {
+    if (taskExecutionMode(task) !== 'resume') {
+      return null;
+    }
+
+    const existingTurnId = desktopTurnId(task);
+
+    if (existingTurnId) {
+      return { task, turnId: existingTurnId };
+    }
+
+    if (!desktopBridge) {
+      return null;
+    }
+
+    const dispatched = await desktopBridge.dispatch(task);
+
+    if (!dispatched?.available) {
+      return null;
+    }
+
+    const turnId = String(dispatched.turnId || '').trim();
+
+    if (!turnId) {
+      throw new CodexTaskExecutionError('Codex Desktop 未返回任务 turn 标识。', {
+        code: 'DESKTOP_TURN_ID_MISSING',
+      });
+    }
+
+    if (typeof store.markTaskDesktopTurn !== 'function') {
+      throw new CodexTaskExecutionError('任务库不支持保存 Codex Desktop turn。', {
+        code: 'DESKTOP_TURN_PERSISTENCE_UNSUPPORTED',
+        retryable: false,
+      });
+    }
+
+    const updatedTask = store.markTaskDesktopTurn(task.task_id, {
+      leaseOwner,
+      turnId,
+    });
+
+    if (!updatedTask) {
+      throw new CodexTaskExecutionError('无法保存 Codex Desktop turn 标识。', {
+        code: 'DESKTOP_TURN_PERSISTENCE_FAILED',
+      });
+    }
+
+    return { task: updatedTask, turnId };
+  }
+
   function recordSyntheticCompletion(task, result, lastMessage) {
     const recorded = store.recordCompletion({
       cwd: String(result.workingDirectory || task.cwd || ''),
@@ -504,6 +641,24 @@ function createCodexExecutor(options = {}) {
 
     try {
       log('info', `开始执行 T-${task.task_id}（${String(task.project_name || '未命名对话')}）。`);
+      const desktopDelivery = await tryDesktopDelivery(task);
+
+      if (desktopDelivery) {
+        const completion = await findDesktopCompletion(
+          desktopDelivery.task,
+          desktopDelivery.turnId,
+        );
+
+        if (!completion) {
+          throw new CodexTaskExecutionError('等待 Codex Desktop 会话完成结果超时。', {
+            code: 'DESKTOP_COMPLETION_TIMEOUT',
+          });
+        }
+
+        await completeTask(desktopDelivery.task, completion);
+        return;
+      }
+
       const result = await runner(task, {
         ...runnerOptions,
         onChild: setActiveChild,
@@ -539,20 +694,7 @@ function createCodexExecutor(options = {}) {
         completion = recordSyntheticCompletion(resultTask, result, lastMessage);
       }
 
-      const done = store.markTaskDone(task.task_id, {
-        leaseOwner,
-        now: currentDate(),
-        resultCompletionId: completion.completion_id,
-      });
-
-      if (!done) {
-        throw new CodexTaskExecutionError('任务执行租约已失效，无法写入完成状态。', {
-          code: 'TASK_LEASE_LOST',
-        });
-      }
-
-      completedTasks += 1;
-      log('info', `T-${task.task_id} 已完成，结果 C-${completion.completion_id} 已进入飞书队列。`);
+      await completeTask(resultTask, completion);
     } catch (error) {
       activeChild = null;
 
@@ -673,6 +815,7 @@ function createCodexExecutor(options = {}) {
 
 module.exports = {
   CodexTaskExecutionError,
+  DEFAULT_DESKTOP_COMPLETION_WAIT_MS,
   DEFAULT_LEASE_HEADROOM_MS,
   DEFAULT_LEASE_MS,
   DEFAULT_MAX_ATTEMPTS,
